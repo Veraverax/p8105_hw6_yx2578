@@ -6,30 +6,14 @@ output: github_document
 
 This is my solution to HW6.
 
-```{r, message = FALSE, warning = FALSE}
+```{r setup, include=FALSE}
 library(tidyverse)
-
-knitr::opts_chunk$set(
-  fig.width = 6,
-  fig.asp = .6,
-  out.width = "90%"
-  )
-
-theme_set(theme_minimal() + theme(legend.position = "bottom"))
-
-options(
-  ggplot2.continuous.colour = "viridis",
-  ggplot2.continuous.fill = "viridis"
-  )
-
-scale_colour_discrete = scale_color_viridis_d
-scale_fill_discrete = scale_fill_viridis_d
+library(modelr)
+library(purrr)
 ```
 
 
-## Problem 1 demo by Jeff in class
-
-```{r, echo = FALSE, message = FALSE, warning = FALSE} models_results_df = 
+```{r, message = FALSE, warning = FALSE}
 homicide_df = 
   read_csv("data/homicide-data.csv", na = c("", "NA", "Unknown")) %>% 
   mutate(
@@ -46,10 +30,9 @@ homicide_df =
   select(city_state, resolution, victim_age, victim_race, victim_sex)
 ```
 
-
 Start with one city.
 
-```{r, echo = FALSE, message = FALSE, warning = FALSE} models_results_df = 
+```{r, message = FALSE, warning = FALSE}
 baltimore_df =
   homicide_df %>% 
   filter(city_state == "Baltimore, MD")
@@ -69,7 +52,7 @@ glm(resolution ~ victim_age + victim_race + victim_sex,
 
 Try this across cities.
 
-```{r, echo = FALSE, message = FALSE, warning = FALSE}
+```{r, message = FALSE, warning = FALSE}
 models_results_df = 
   homicide_df %>% 
   nest(data = -city_state) %>% 
@@ -88,7 +71,7 @@ models_results_df =
   select(city_state, term, OR, starts_with("CI")) 
 ```
 
-```{r, echo = FALSE, message = FALSE, warning = FALSE} models_results_df = 
+```{r, message = FALSE, warning = FALSE}
 models_results_df %>% 
   filter(term == "victim_sexMale") %>% 
   mutate(city_state = fct_reorder(city_state, OR)) %>% 
@@ -97,4 +80,118 @@ models_results_df %>%
   geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper)) + 
   theme(axis.text.x = element_text(angle = 90, hjust = 1))
 ```
+
+## Problem 2
+
+```{r, message = FALSE, warning = FALSE}
+bw_df = 
+  read_csv("data/birthweight.csv") %>%
+  mutate(
+         babysex = as.factor(babysex),
+         frace = as.factor(frace),
+         malform = as.factor(malform),
+         mrace = as.factor(mrace)
+         ) %>%
+  select(bwt, everything())
+```
+
+The birthweight data contains `r bw_df %>% nrow()` rows, and no missing data.
+
+#### Fit model of my own choice
+
+I'm referring to an article that introduces birthweight predictor factors. Race, mother's age, multiple birth and mother's health condition influences birthweight. Based on this article, the variables I chose as predictor variables are: 
+
+* mother’s age at delivery
+
+* father’s race
+
+* mother's race
+
+* number of live births prior to this pregnancy
+
+* mother’s pre-pregnancy BMI
+
+* average number of cigarettes smoked per day during pregnancy
+
+* mother’s weight at delivery.
+
+Full article can be accessed at: https://www.childrenshospital.org/conditions-and-treatments/conditions/l/low-birthweight-in-newborns/symptoms-and-causes.
+
+
+**Model #1**: bwt ~ momage + frace + mrace  + parity + ppbmi + smoken + wtgain
+
+```{r, message = FALSE, warning = FALSE}
+m1 = lm( bwt ~ momage + frace + mrace  + parity + ppbmi + smoken + wtgain, data = bw_df)
+
+m1 %>%   
+  broom::tidy() %>%
+  select(term, estimate, p.value) %>% 
+  knitr::kable(digits = 5)
+  
+bw_df %>% 
+  add_predictions(model = m1, var = "pred") %>% 
+  add_residuals(model = m1, var = "resid") %>%
+  ggplot(aes(x = pred, y = resid)) + 
+  geom_point(alpha = 0.2) +
+  geom_smooth(se = F, color = "red", method = "lm") + 
+  xlab("predictions") + 
+  ylab("residuals")
+```
+
+Based on the residual plot, the residual is basically randomly distributed along the x axis with some larger negative values when predictied values are around 2500 ~ 3250. This model look basically fine, but might not be the best fitted model.
+
+**Model #2**: bwt ~ blength + gaweeks
+
+**Model #3**: bwt ~ babysex + blength + bhead + babysex * blength + babysex * bhead + blength * bhead + babysex * blength * bhead
+
+```{r, message = FALSE, warning = FALSE}
+bw_cv_df =
+    crossv_mc(bw_df, 100) %>% 
+    mutate(train = map(train, as_tibble),
+           test = map(test, as_tibble))
+
+bw_cv_df =
+    bw_cv_df  %>% 
+  mutate(
+    m1 = map(train, ~lm(bwt ~ momage + frace + mrace  + parity + ppbmi + smoken + wtgain, data = .x)),
+    m2 = map(train, ~lm(bwt ~ blength + gaweeks,  data = .x)),
+    m3 = map(train, ~lm(bwt ~ babysex + blength + bhead + babysex * blength + babysex * bhead + blength * bhead + babysex * blength * bhead, data = .x))
+    ) %>% 
+  mutate(
+    rmse_m1 = map2_dbl(m1, test, ~rmse(model = .x, data = .y)),
+    rmse_m2 = map2_dbl(m2, test, ~rmse(model = .x, data = .y)),
+    rmse_m3 = map2_dbl(m3, test, ~rmse(model = .x, data = .y)))
+
+bw_cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + 
+  geom_violin()
+```
+
+From this rmse plot, model 3 is the best model as it has the lowest rmse. The best model among these three candidates is to use **head circumference, length, sex, and all interactions** to predict baby's birthweight.
+
+
+## Problem 3
+
+```{r, message = FALSE, warning = FALSE}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+
+The dataset for this problem has `r weather_df %>% nrow()` rows. The variables in this dataset are: `r weather_df %>% ls()`.
 
